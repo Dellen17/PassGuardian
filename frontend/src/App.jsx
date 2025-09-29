@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App.css';
 
 function App() {
@@ -8,6 +8,10 @@ function App() {
   const [activeTab, setActiveTab] = useState('check'); // 'check' or 'generate'
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [isCopied, setIsCopied] = useState(false);
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [filterRating, setFilterRating] = useState('all');
   
   // Password generator settings
   const [genSettings, setGenSettings] = useState({
@@ -16,6 +20,13 @@ function App() {
     useNumbers: true,
     useSymbols: true
   });
+
+  // Load history when component mounts or when showHistory changes
+  useEffect(() => {
+    if (showHistory) {
+      loadHistory();
+    }
+  }, [showHistory]);
 
   // Check password strength
   const checkPassword = async () => {
@@ -33,6 +44,7 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ password }),
+        credentials: 'include' // Important for session cookies
       });
 
       if (!response.ok) {
@@ -41,6 +53,11 @@ function App() {
 
       const data = await response.json();
       setResult(data);
+      
+      // Refresh history after new check
+      if (showHistory) {
+        loadHistory();
+      }
     } catch (error) {
       console.error('Error:', error);
       alert('Failed to check password. Make sure the backend server is running.');
@@ -60,6 +77,7 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(genSettings),
+        credentials: 'include' // Important for session cookies
       });
 
       if (!response.ok) {
@@ -69,11 +87,62 @@ function App() {
       const data = await response.json();
       setGeneratedPassword(data.password);
       setResult(data);
+      
+      // Refresh history after generation
+      if (showHistory) {
+        loadHistory();
+      }
     } catch (error) {
       console.error('Error:', error);
       alert('Failed to generate password. Make sure the backend server is running.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Load password check history
+  const loadHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/get_history`, {
+        credentials: 'include' // Important for session cookies
+      });
+
+      if (!response.ok) {
+        throw new Error('Network response was not ok');
+      }
+
+      const data = await response.json();
+      setHistory(data.history || []);
+    } catch (error) {
+      console.error('Error loading history:', error);
+      alert('Failed to load history.');
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // Clear history
+  const clearHistory = async () => {
+    if (!window.confirm('Are you sure you want to clear your password check history?')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/clear_history`, {
+        method: 'POST',
+        credentials: 'include' // Important for session cookies
+      });
+
+      if (!response.ok) {
+        throw new Error('Network response was not ok');
+      }
+
+      setHistory([]);
+      alert('History cleared successfully');
+    } catch (error) {
+      console.error('Error clearing history:', error);
+      alert('Failed to clear history.');
     }
   };
 
@@ -105,10 +174,20 @@ function App() {
     }));
   };
 
-  const getRatingColor = () => {
-    if (!result) return '#666';
-    
-    switch (result.rating) {
+  // Filter history by rating
+  const filteredHistory = history.filter(item => {
+    if (filterRating === 'all') return true;
+    return item.rating === filterRating;
+  });
+
+  // Format timestamp for display
+  const formatTimestamp = (timestamp) => {
+    const date = new Date(timestamp);
+    return date.toLocaleTimeString() + ' ' + date.toLocaleDateString();
+  };
+
+  const getRatingColor = (rating) => {
+    switch (rating) {
       case 'Weak': return '#ff4d4d';
       case 'Medium': return '#ffa64d';
       case 'Strong': return '#33cc33';
@@ -122,6 +201,87 @@ function App() {
         <h1>PassGuardian</h1>
         <p>Secure password strength checker and generator</p>
         
+        {/* History Toggle Button */}
+        <div className="history-toggle">
+          <button 
+            className={`history-button ${showHistory ? 'active' : ''}`}
+            onClick={() => setShowHistory(!showHistory)}
+          >
+            {showHistory ? 'Hide History' : 'Show History'} 
+            {history.length > 0 && ` (${history.length})`}
+          </button>
+        </div>
+
+        {/* History Panel */}
+        {showHistory && (
+          <div className="history-panel">
+            <div className="history-header">
+              <h2>Password Check History</h2>
+              <div className="history-controls">
+                <select 
+                  value={filterRating} 
+                  onChange={(e) => setFilterRating(e.target.value)}
+                  className="history-filter"
+                >
+                  <option value="all">All Ratings</option>
+                  <option value="Strong">Strong</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Weak">Weak</option>
+                </select>
+                <button 
+                  onClick={clearHistory}
+                  className="clear-history-button"
+                  disabled={history.length === 0}
+                >
+                  Clear History
+                </button>
+              </div>
+            </div>
+
+            {historyLoading ? (
+              <div className="history-loading">Loading history...</div>
+            ) : filteredHistory.length === 0 ? (
+              <div className="history-empty">
+                {history.length === 0 
+                  ? 'No password checks yet. Check or generate some passwords to see them here!' 
+                  : 'No passwords match the selected filter.'}
+              </div>
+            ) : (
+              <div className="history-list">
+                {filteredHistory.map((item, index) => (
+                  <div key={item.id || index} className="history-item">
+                    <div className="history-item-header">
+                      <span 
+                        className="history-rating"
+                        style={{ color: getRatingColor(item.rating) }}
+                      >
+                        {item.rating}
+                      </span>
+                      <span className="history-timestamp">
+                        {formatTimestamp(item.timestamp)}
+                      </span>
+                      {item.generated && (
+                        <span className="history-generated-badge">Generated</span>
+                      )}
+                    </div>
+                    
+                    <div className="history-details">
+                      <div className="history-length">Length: {item.length} chars</div>
+                      <div className="history-features">
+                        {item.has_uppercase && <span className="feature-tag">A-Z</span>}
+                        {item.has_lowercase && <span className="feature-tag">a-z</span>}
+                        {item.has_numbers && <span className="feature-tag">0-9</span>}
+                        {item.has_symbols && <span className="feature-tag">!@#</span>}
+                        {item.is_common && <span className="feature-tag warning">Common</span>}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Tab Navigation */}
         <div className="tab-navigation">
           <button 
@@ -249,7 +409,7 @@ function App() {
         {result && (
           <div className="result-container">
             <h2>Password Strength: 
-              <span style={{ color: getRatingColor() }}>
+              <span style={{ color: getRatingColor(result.rating) }}>
                 {result.rating}
               </span>
             </h2>
@@ -272,6 +432,7 @@ function App() {
             <li>Verifies inclusion of numbers and special characters</li>
             <li>Compares against common passwords</li>
             <li>Generates cryptographically secure random passwords</li>
+            <li>Stores check history securely (no passwords stored)</li>
           </ul>
         </div>
       </header>

@@ -1,12 +1,24 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session
 from flask_cors import CORS
 import re
 import random
 import string
 import secrets  # For cryptographically secure random generation
+import hashlib
+import time
+from datetime import datetime
 
 app = Flask(__name__)
-CORS(app)  # This allows the React frontend to communicate with the Flask backend
+app.secret_key = 'passguardian-secret-key-2024'  # In production, use environment variable
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_SECURE'] = False  # Set to True in production with HTTPS
+
+# Configure CORS properly - remove the manual after_request handler
+CORS(app, 
+     supports_credentials=True, 
+     origins=['http://localhost:5173', 'http://localhost:3000'],
+     methods=['GET', 'POST', 'OPTIONS'],
+     allow_headers=['Content-Type'])
 
 # A function to load common passwords from the .txt file
 def load_common_passwords(filename):
@@ -111,9 +123,32 @@ def generate_secure_password(length=16, use_uppercase=True, use_numbers=True, us
     
     return password
 
+# Function to create a secure hash of password metadata (never store actual passwords)
+def create_password_hash(password):
+    """Create a secure hash for password identification without storing the password"""
+    # Use a combination of length and first/last characters for identification
+    # This allows us to identify similar passwords without storing the actual password
+    if len(password) <= 4:
+        identifier = f"len_{len(password)}"
+    else:
+        identifier = f"len_{len(password)}_start_{password[:2]}_end_{password[-2:]}"
+    
+    # Create a hash for additional security
+    return hashlib.sha256(identifier.encode()).hexdigest()[:16]
+
+# Initialize session history
+@app.before_request
+def initialize_session():
+    if 'history' not in session:
+        session['history'] = []
+        print("Initialized new session history")
+
 # API route to check password strength
-@app.route('/check_password', methods=['POST'])
+@app.route('/check_password', methods=['POST', 'OPTIONS'])
 def check_password():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+        
     # Get the password from the request
     data = request.get_json()
     password = data.get('password', '')
@@ -124,15 +159,39 @@ def check_password():
     # Check password strength
     rating, feedback = check_password_strength(password, common_passwords)
     
+    # Create history entry (without storing the actual password)
+    history_entry = {
+        'id': create_password_hash(password),
+        'timestamp': datetime.now().isoformat(),
+        'rating': rating,
+        'length': len(password),
+        'has_uppercase': bool(re.search(r'[A-Z]', password)),
+        'has_lowercase': bool(re.search(r'[a-z]', password)),
+        'has_numbers': bool(re.search(r'[0-9]', password)),
+        'has_symbols': bool(re.search(r'[^A-Za-z0-9]', password)),
+        'is_common': password.lower() in common_passwords
+    }
+    
+    # Add to session history (limit to last 20 entries)
+    session['history'].insert(0, history_entry)
+    session['history'] = session['history'][:20]
+    session.modified = True
+    
+    print(f"Added to history. Total entries: {len(session['history'])}")
+    
     # Return the result as JSON
     return jsonify({
         'rating': rating,
-        'feedback': feedback
+        'feedback': feedback,
+        'history_id': history_entry['id']
     })
 
 # New API route to generate a secure password
-@app.route('/generate_password', methods=['POST'])
+@app.route('/generate_password', methods=['POST', 'OPTIONS'])
 def generate_password():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+        
     """Generate a secure password with customizable options"""
     try:
         # Get generation parameters from the request
@@ -161,6 +220,27 @@ def generate_password():
         # Check the strength of the generated password
         rating, feedback = check_password_strength(generated_password, common_passwords)
         
+        # Create history entry for generated password
+        history_entry = {
+            'id': create_password_hash(generated_password),
+            'timestamp': datetime.now().isoformat(),
+            'rating': rating,
+            'length': len(generated_password),
+            'has_uppercase': use_uppercase,
+            'has_lowercase': True,  # Always true since we have lowercase base
+            'has_numbers': use_numbers,
+            'has_symbols': use_symbols,
+            'is_common': generated_password.lower() in common_passwords,
+            'generated': True  # Mark as generated password
+        }
+        
+        # Add to session history
+        session['history'].insert(0, history_entry)
+        session['history'] = session['history'][:20]
+        session.modified = True
+        
+        print(f"Added generated password to history. Total entries: {len(session['history'])}")
+        
         # Return the generated password and its strength analysis
         return jsonify({
             'password': generated_password,
@@ -172,11 +252,44 @@ def generate_password():
                 'use_uppercase': use_uppercase,
                 'use_numbers': use_numbers,
                 'use_symbols': use_symbols
-            }
+            },
+            'history_id': history_entry['id']
         })
         
     except Exception as e:
         return jsonify({'error': f'Failed to generate password: {str(e)}'}), 500
+
+# New endpoint to get password check history
+@app.route('/get_history', methods=['GET', 'OPTIONS'])
+def get_history():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+        
+    """Get the user's password check history"""
+    try:
+        history = session.get('history', [])
+        print(f"Retrieving history. Total entries: {len(history)}")
+        return jsonify({
+            'history': history,
+            'total_checks': len(history)
+        })
+    except Exception as e:
+        return jsonify({'error': f'Failed to retrieve history: {str(e)}'}), 500
+
+# New endpoint to clear history
+@app.route('/clear_history', methods=['POST', 'OPTIONS'])
+def clear_history():
+    if request.method == 'OPTIONS':
+        return jsonify({'status': 'ok'}), 200
+        
+    """Clear the user's password check history"""
+    try:
+        session['history'] = []
+        session.modified = True
+        print("History cleared")
+        return jsonify({'message': 'History cleared successfully'})
+    except Exception as e:
+        return jsonify({'error': f'Failed to clear history: {str(e)}'}), 500
 
 # Health check route to test if the API is working
 @app.route('/health', methods=['GET'])
