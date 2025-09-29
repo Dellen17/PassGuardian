@@ -1,6 +1,9 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import re
+import random
+import string
+import secrets  # For cryptographically secure random generation
 
 app = Flask(__name__)
 CORS(app)  # This allows the React frontend to communicate with the Flask backend
@@ -76,6 +79,38 @@ def check_password_strength(password, common_passwords):
     
     return rating, feedback
 
+# Function to generate a secure password
+def generate_secure_password(length=16, use_uppercase=True, use_numbers=True, use_symbols=True):
+    """
+    Generate a cryptographically secure random password
+    
+    Args:
+        length: Length of the password (default: 16)
+        use_uppercase: Include uppercase letters (default: True)
+        use_numbers: Include numbers (default: True)
+        use_symbols: Include symbols (default: True)
+    
+    Returns:
+        Generated password string
+    """
+    # Define character sets
+    lowercase_letters = string.ascii_lowercase
+    uppercase_letters = string.ascii_uppercase if use_uppercase else ''
+    numbers = string.digits if use_numbers else ''
+    symbols = "!@#$%^&*()_+-=[]{}|;:,.<>?" if use_symbols else ''
+    
+    # Combine all allowed characters
+    all_characters = lowercase_letters + uppercase_letters + numbers + symbols
+    
+    # Ensure we have at least one character type selected
+    if not all_characters:
+        all_characters = lowercase_letters  # Fallback to at least lowercase
+    
+    # Generate password using cryptographically secure random choices
+    password = ''.join(secrets.choice(all_characters) for _ in range(length))
+    
+    return password
+
 # API route to check password strength
 @app.route('/check_password', methods=['POST'])
 def check_password():
@@ -94,6 +129,54 @@ def check_password():
         'rating': rating,
         'feedback': feedback
     })
+
+# New API route to generate a secure password
+@app.route('/generate_password', methods=['POST'])
+def generate_password():
+    """Generate a secure password with customizable options"""
+    try:
+        # Get generation parameters from the request
+        data = request.get_json() or {}
+        
+        length = data.get('length', 16)
+        use_uppercase = data.get('use_uppercase', True)
+        use_numbers = data.get('use_numbers', True)
+        use_symbols = data.get('use_symbols', True)
+        
+        # Validate parameters
+        if not isinstance(length, int) or length < 8 or length > 64:
+            return jsonify({'error': 'Password length must be between 8 and 64'}), 400
+        
+        # Generate the password
+        generated_password = generate_secure_password(
+            length=length,
+            use_uppercase=use_uppercase,
+            use_numbers=use_numbers,
+            use_symbols=use_symbols
+        )
+        
+        # Load common passwords for strength checking
+        common_passwords = load_common_passwords('common_passwords.txt')
+        
+        # Check the strength of the generated password
+        rating, feedback = check_password_strength(generated_password, common_passwords)
+        
+        # Return the generated password and its strength analysis
+        return jsonify({
+            'password': generated_password,
+            'rating': rating,
+            'feedback': feedback,
+            'length': len(generated_password),
+            'settings': {
+                'length': length,
+                'use_uppercase': use_uppercase,
+                'use_numbers': use_numbers,
+                'use_symbols': use_symbols
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to generate password: {str(e)}'}), 500
 
 # Health check route to test if the API is working
 @app.route('/health', methods=['GET'])
