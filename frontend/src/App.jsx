@@ -28,6 +28,24 @@ function App() {
     }
   }, [showHistory]);
 
+  // Add this function to check session status
+  const checkSessionStatus = async () => {
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/session_info`, {
+        credentials: 'include'
+      });
+      const data = await response.json();
+      console.log('Session Info:', data);
+    } catch (error) {
+      console.error('Session check failed:', error);
+    }
+  };
+
+  // Call this once on mount for debugging
+  useEffect(() => {
+    checkSessionStatus();
+  }, []);
+
   // Check password strength
   const checkPassword = async () => {
     if (!password) {

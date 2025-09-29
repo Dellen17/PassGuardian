@@ -8,20 +8,21 @@ import hashlib
 import time
 from datetime import datetime
 import os
+import json
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'passguardian-secret-key-2024')  # Use environment variable in production
+app.secret_key = os.environ.get('SECRET_KEY', 'passguardian-secret-key-2024')
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = True  # Set to True in production with HTTPS
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 hour session lifetime
 
 # Configure CORS for both development and production
 allowed_origins = [
     'http://localhost:5173',
     'http://localhost:3000',
-    'https://pass-guardian-flame.vercel.app'  # Add your Vercel domain
+    'https://pass-guardian-flame.vercel.app'
 ]
 
-# Use environment variable for additional origins if needed
 additional_origins = os.environ.get('ALLOWED_ORIGINS', '').split(',')
 allowed_origins.extend([origin.strip() for origin in additional_origins if origin.strip()])
 
@@ -137,22 +138,37 @@ def generate_secure_password(length=16, use_uppercase=True, use_numbers=True, us
 # Function to create a secure hash of password metadata (never store actual passwords)
 def create_password_hash(password):
     """Create a secure hash for password identification without storing the password"""
-    # Use a combination of length and first/last characters for identification
-    # This allows us to identify similar passwords without storing the actual password
     if len(password) <= 4:
         identifier = f"len_{len(password)}"
     else:
         identifier = f"len_{len(password)}_start_{password[:2]}_end_{password[-2:]}"
     
-    # Create a hash for additional security
     return hashlib.sha256(identifier.encode()).hexdigest()[:16]
 
-# Initialize session history
+# Initialize session history with better persistence
 @app.before_request
 def initialize_session():
     if 'history' not in session:
         session['history'] = []
-        print("Initialized new session history")
+        session.permanent = True  # Make session permanent
+        print("Initialized new permanent session history")
+
+# Enhanced history management
+def add_to_history(history_entry):
+    """Add entry to history with proper session management"""
+    if 'history' not in session:
+        session['history'] = []
+    
+    # Add to beginning of history
+    session['history'].insert(0, history_entry)
+    
+    # Limit to last 20 entries
+    session['history'] = session['history'][:20]
+    
+    # Mark session as modified to ensure it's saved
+    session.modified = True
+    
+    print(f"Added to history. Total entries: {len(session['history'])}")
 
 # API route to check password strength
 @app.route('/check_password', methods=['POST', 'OPTIONS'])
@@ -180,15 +196,12 @@ def check_password():
         'has_lowercase': bool(re.search(r'[a-z]', password)),
         'has_numbers': bool(re.search(r'[0-9]', password)),
         'has_symbols': bool(re.search(r'[^A-Za-z0-9]', password)),
-        'is_common': password.lower() in common_passwords
+        'is_common': password.lower() in common_passwords,
+        'type': 'checked'
     }
     
-    # Add to session history (limit to last 20 entries)
-    session['history'].insert(0, history_entry)
-    session['history'] = session['history'][:20]
-    session.modified = True
-    
-    print(f"Added to history. Total entries: {len(session['history'])}")
+    # Add to history
+    add_to_history(history_entry)
     
     # Return the result as JSON
     return jsonify({
@@ -242,15 +255,11 @@ def generate_password():
             'has_numbers': use_numbers,
             'has_symbols': use_symbols,
             'is_common': generated_password.lower() in common_passwords,
-            'generated': True  # Mark as generated password
+            'type': 'generated'
         }
         
-        # Add to session history
-        session['history'].insert(0, history_entry)
-        session['history'] = session['history'][:20]
-        session.modified = True
-        
-        print(f"Added generated password to history. Total entries: {len(session['history'])}")
+        # Add to history
+        add_to_history(history_entry)
         
         # Return the generated password and its strength analysis
         return jsonify({
@@ -279,10 +288,11 @@ def get_history():
     """Get the user's password check history"""
     try:
         history = session.get('history', [])
-        print(f"Retrieving history. Total entries: {len(history)}")
+        print(f"Retrieving history. Session ID: {session.get('_id', 'unknown')}, Total entries: {len(history)}")
         return jsonify({
             'history': history,
-            'total_checks': len(history)
+            'total_checks': len(history),
+            'session_active': True
         })
     except Exception as e:
         return jsonify({'error': f'Failed to retrieve history: {str(e)}'}), 500
@@ -301,6 +311,17 @@ def clear_history():
         return jsonify({'message': 'History cleared successfully'})
     except Exception as e:
         return jsonify({'error': f'Failed to clear history: {str(e)}'}), 500
+
+# Debug endpoint to check session status
+@app.route('/session_info', methods=['GET'])
+def session_info():
+    """Debug endpoint to check session status"""
+    return jsonify({
+        'session_id': str(session),
+        'history_count': len(session.get('history', [])),
+        'session_permanent': session.permanent,
+        'session_modified': session.modified
+    })
 
 # Health check route to test if the API is working
 @app.route('/health', methods=['GET'])
