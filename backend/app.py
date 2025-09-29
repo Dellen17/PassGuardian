@@ -7,16 +7,27 @@ import secrets  # For cryptographically secure random generation
 import hashlib
 import time
 from datetime import datetime
+import os
 
 app = Flask(__name__)
-app.secret_key = 'passguardian-secret-key-2024'  # In production, use environment variable
+app.secret_key = os.environ.get('SECRET_KEY', 'passguardian-secret-key-2024')  # Use environment variable in production
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = False  # Set to True in production with HTTPS
+app.config['SESSION_COOKIE_SECURE'] = True  # Set to True in production with HTTPS
 
-# Configure CORS properly - remove the manual after_request handler
+# Configure CORS for both development and production
+allowed_origins = [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'https://pass-guardian-flame.vercel.app'  # Add your Vercel domain
+]
+
+# Use environment variable for additional origins if needed
+additional_origins = os.environ.get('ALLOWED_ORIGINS', '').split(',')
+allowed_origins.extend([origin.strip() for origin in additional_origins if origin.strip()])
+
 CORS(app, 
      supports_credentials=True, 
-     origins=['http://localhost:5173', 'http://localhost:3000'],
+     origins=allowed_origins,
      methods=['GET', 'POST', 'OPTIONS'],
      allow_headers=['Content-Type'])
 
