@@ -21,30 +21,44 @@ function App() {
     useSymbols: true
   });
 
-  // Load history when component mounts or when showHistory changes
+  // Load history from localStorage on component mount
   useEffect(() => {
-    if (showHistory) {
-      loadHistory();
-    }
-  }, [showHistory]);
+    loadLocalHistory();
+  }, []);
 
-  // Add this function to check session status
-  const checkSessionStatus = async () => {
+  // Load history from localStorage
+  const loadLocalHistory = () => {
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/session_info`, {
-        credentials: 'include'
-      });
-      const data = await response.json();
-      console.log('Session Info:', data);
+      const storedHistory = localStorage.getItem('passguardian_history');
+      if (storedHistory) {
+        const parsedHistory = JSON.parse(storedHistory);
+        setHistory(parsedHistory);
+      }
     } catch (error) {
-      console.error('Session check failed:', error);
+      console.error('Error loading history from localStorage:', error);
     }
   };
 
-  // Call this once on mount for debugging
-  useEffect(() => {
-    checkSessionStatus();
-  }, []);
+  // Save history to localStorage
+  const saveToLocalHistory = (newEntry) => {
+    try {
+      const updatedHistory = [newEntry, ...history].slice(0, 20); // Keep last 20 entries
+      setHistory(updatedHistory);
+      localStorage.setItem('passguardian_history', JSON.stringify(updatedHistory));
+    } catch (error) {
+      console.error('Error saving history to localStorage:', error);
+    }
+  };
+
+  // Clear local history
+  const clearLocalHistory = () => {
+    try {
+      setHistory([]);
+      localStorage.removeItem('passguardian_history');
+    } catch (error) {
+      console.error('Error clearing local history:', error);
+    }
+  };
 
   // Check password strength
   const checkPassword = async () => {
@@ -62,7 +76,7 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ password }),
-        credentials: 'include' // Important for session cookies
+        credentials: 'include'
       });
 
       if (!response.ok) {
@@ -72,10 +86,22 @@ function App() {
       const data = await response.json();
       setResult(data);
       
-      // Refresh history after new check
-      if (showHistory) {
-        loadHistory();
-      }
+      // Create local history entry
+      const historyEntry = {
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        timestamp: new Date().toISOString(),
+        rating: data.rating,
+        length: password.length,
+        has_uppercase: /[A-Z]/.test(password),
+        has_lowercase: /[a-z]/.test(password),
+        has_numbers: /[0-9]/.test(password),
+        has_symbols: /[^A-Za-z0-9]/.test(password),
+        is_common: false, // We don't have this info from frontend
+        type: 'checked'
+      };
+      
+      saveToLocalHistory(historyEntry);
+      
     } catch (error) {
       console.error('Error:', error);
       alert('Failed to check password. Make sure the backend server is running.');
@@ -95,7 +121,7 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(genSettings),
-        credentials: 'include' // Important for session cookies
+        credentials: 'include'
       });
 
       if (!response.ok) {
@@ -106,10 +132,23 @@ function App() {
       setGeneratedPassword(data.password);
       setResult(data);
       
-      // Refresh history after generation
-      if (showHistory) {
-        loadHistory();
-      }
+      // Create local history entry for generated password
+      const historyEntry = {
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        timestamp: new Date().toISOString(),
+        rating: data.rating,
+        length: data.length,
+        has_uppercase: genSettings.useUppercase,
+        has_lowercase: true, // Always true for generated passwords
+        has_numbers: genSettings.useNumbers,
+        has_symbols: genSettings.useSymbols,
+        is_common: false,
+        type: 'generated',
+        generated: true
+      };
+      
+      saveToLocalHistory(historyEntry);
+      
     } catch (error) {
       console.error('Error:', error);
       alert('Failed to generate password. Make sure the backend server is running.');
@@ -118,50 +157,62 @@ function App() {
     }
   };
 
-  // Load password check history
+  // Load password check history (now uses local storage)
   const loadHistory = async () => {
     setHistoryLoading(true);
     try {
+      // Try to load from server first (for backward compatibility)
       const response = await fetch(`${import.meta.env.VITE_API_URL}/get_history`, {
-        credentials: 'include' // Important for session cookies
+        credentials: 'include'
       });
 
-      if (!response.ok) {
-        throw new Error('Network response was not ok');
+      if (response.ok) {
+        const data = await response.json();
+        if (data.history && data.history.length > 0) {
+          // Merge server history with local history
+          const mergedHistory = [...data.history, ...history];
+          const uniqueHistory = mergedHistory.filter((item, index, self) => 
+            index === self.findIndex(t => t.id === item.id)
+          ).slice(0, 20);
+          
+          setHistory(uniqueHistory);
+          localStorage.setItem('passguardian_history', JSON.stringify(uniqueHistory));
+          return;
+        }
       }
-
-      const data = await response.json();
-      setHistory(data.history || []);
+      
+      // If server history is empty, just use local history
+      loadLocalHistory();
+      
     } catch (error) {
-      console.error('Error loading history:', error);
-      alert('Failed to load history.');
+      console.error('Error loading server history:', error);
+      // Fallback to local history
+      loadLocalHistory();
     } finally {
       setHistoryLoading(false);
     }
   };
 
-  // Clear history
+  // Clear history (both local and server)
   const clearHistory = async () => {
     if (!window.confirm('Are you sure you want to clear your password check history?')) {
       return;
     }
 
     try {
-      const response = await fetch(`${import.meta.env.VITE_API_URL}/clear_history`, {
+      // Clear server history
+      await fetch(`${import.meta.env.VITE_API_URL}/clear_history`, {
         method: 'POST',
-        credentials: 'include' // Important for session cookies
+        credentials: 'include'
       });
-
-      if (!response.ok) {
-        throw new Error('Network response was not ok');
-      }
-
-      setHistory([]);
-      alert('History cleared successfully');
     } catch (error) {
-      console.error('Error clearing history:', error);
-      alert('Failed to clear history.');
+      console.error('Error clearing server history:', error);
+      // Continue with local clearing even if server fails
     }
+    
+    // Always clear local history
+    clearLocalHistory();
+    alert('History cleared successfully');
   };
 
   // Copy to clipboard
@@ -280,6 +331,9 @@ function App() {
                       </span>
                       {item.generated && (
                         <span className="history-generated-badge">Generated</span>
+                      )}
+                      {item.type === 'checked' && (
+                        <span className="history-checked-badge">Checked</span>
                       )}
                     </div>
                     
@@ -450,7 +504,7 @@ function App() {
             <li>Verifies inclusion of numbers and special characters</li>
             <li>Compares against common passwords</li>
             <li>Generates cryptographically secure random passwords</li>
-            <li>Stores check history securely (no passwords stored)</li>
+            <li>Stores check history in your browser (no passwords stored)</li>
           </ul>
         </div>
       </header>
